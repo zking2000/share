@@ -25,14 +25,8 @@ spec:
         ports:
         - containerPort: 8080
           name: http-metrics
-        env:
-        - name: GCS_BUCKET_NAME
-          valueFrom:
-            configMapKeyRef:
-              name: gcs-config
-              key: bucket-name
-        # 移除 GOOGLE_APPLICATION_CREDENTIALS 环境变量
-        # Workload Identity 会自动处理认证
+        # 使用 Workload Identity，无需设置环境变量
+        # GCS bucket 名称直接在 mimir.yaml 配置文件中指定
         volumeMounts:
         - name: config
           mountPath: /etc/mimir
