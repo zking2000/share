@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: grafana-stack
+  labels:
+    app: loki
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+    spec:
+      serviceAccountName: grafana-stack-sa
+      containers:
+      - name: loki
+        image: grafana/loki:2.9.0
+        args:
+          - -config.file=/etc/loki/loki.yaml
+        ports:
+        - containerPort: 3100
+          name: http-metrics
+        - containerPort: 9096
+          name: grpc
+        env:
+        - name: GCS_BUCKET_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: gcs-config
+              key: bucket-name
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /var/secrets/google/service-account-key.json
+        volumeMounts:
+        - name: config
+          mountPath: /etc/loki
+        - name: gcs-credentials
+          mountPath: /var/secrets/google
+          readOnly: true
+        - name: storage
+          mountPath: /tmp/loki
+        livenessProbe:
+          httpGet:
+            path: /ready
+            port: http-metrics
+          initialDelaySeconds: 45
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http-metrics
+          initialDelaySeconds: 45
+        resources:
+          limits:
+            cpu: 500m
+            memory: 1Gi
+          requests:
+            cpu: 100m
+            memory: 256Mi
+      volumes:
+      - name: config
+        configMap:
+          name: loki-config
+      - name: gcs-credentials
+        secret:
+          secretName: gcs-credentials
+      - name: storage
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: grafana-stack
+  labels:
+    app: loki
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3100
+      protocol: TCP
+      name: http-metrics
+      targetPort: http-metrics
+    - port: 9096
+      protocol: TCP
+      name: grpc
+      targetPort: grpc
+  selector:
+    app: loki 
