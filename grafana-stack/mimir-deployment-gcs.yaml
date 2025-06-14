@@ -15,7 +15,7 @@ spec:
       labels:
         app: mimir
     spec:
-      serviceAccountName: grafana-stack-sa
+      serviceAccountName: grafana-stack-sa  # 使用配置了 Workload Identity 的 SA
       containers:
       - name: mimir
         image: grafana/mimir:2.10.0
@@ -31,16 +31,14 @@ spec:
             configMapKeyRef:
               name: gcs-config
               key: bucket-name
-        - name: GOOGLE_APPLICATION_CREDENTIALS
-          value: /etc/gcs/service-account-key.json
+        # 移除 GOOGLE_APPLICATION_CREDENTIALS 环境变量
+        # Workload Identity 会自动处理认证
         volumeMounts:
         - name: config
           mountPath: /etc/mimir
-        - name: gcs-credentials
-          mountPath: /etc/gcs
-          readOnly: true
         - name: storage
           mountPath: /tmp/mimir
+        # 移除 gcs-credentials volume mount
         livenessProbe:
           httpGet:
             path: /ready
@@ -62,11 +60,9 @@ spec:
       - name: config
         configMap:
           name: mimir-config
-      - name: gcs-credentials
-        secret:
-          secretName: gcs-credentials
       - name: storage
         emptyDir: {}
+      # 移除 gcs-credentials volume
 ---
 apiVersion: v1
 kind: Service
