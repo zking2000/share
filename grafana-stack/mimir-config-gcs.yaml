@@ -52,7 +52,7 @@ data:
       backend: gcs
       gcs:
         bucket_name: "maplequad-11859276-cmf-dev-grafana-stack-b9018bed"
-        # 不需要 service_account 字段，使用 Workload Identity
+        # 使用 Workload Identity，无需 service_account 字段
       tsdb:
         dir: /tmp/mimir/tsdb
         retention_period: 24h
@@ -62,14 +62,14 @@ data:
       gcs:
         bucket_name: "maplequad-11859276-cmf-dev-grafana-stack-b9018bed"
         prefix: alertmanager/
-        # 不需要 service_account 字段，使用 Workload Identity
+        # 使用 Workload Identity，无需 service_account 字段
     
     ruler_storage:
       backend: gcs
       gcs:
         bucket_name: "maplequad-11859276-cmf-dev-grafana-stack-b9018bed"
         prefix: ruler/
-        # 不需要 service_account 字段，使用 Workload Identity
+        # 使用 Workload Identity，无需 service_account 字段
     
     # Configure the store-gateway
     store_gateway:
