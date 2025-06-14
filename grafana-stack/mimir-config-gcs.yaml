@@ -47,12 +47,12 @@ data:
         kvstore:
           store: inmemory
     
-    # Configure storage (using GCS bucket for production-ready storage)
+    # Configure storage (using GCS bucket with Workload Identity)
     blocks_storage:
       backend: gcs
       gcs:
         bucket_name: "maplequad-11859276-cmf-dev-grafana-stack-b9018bed"
-        service_account: /etc/gcs/service-account-key.json
+        # 不需要 service_account 字段，使用 Workload Identity
       tsdb:
         dir: /tmp/mimir/tsdb
         retention_period: 24h
@@ -62,14 +62,14 @@ data:
       gcs:
         bucket_name: "maplequad-11859276-cmf-dev-grafana-stack-b9018bed"
         prefix: alertmanager/
-        service_account: /etc/gcs/service-account-key.json
+        # 不需要 service_account 字段，使用 Workload Identity
     
     ruler_storage:
       backend: gcs
       gcs:
         bucket_name: "maplequad-11859276-cmf-dev-grafana-stack-b9018bed"
         prefix: ruler/
-        service_account: /etc/gcs/service-account-key.json
+        # 不需要 service_account 字段，使用 Workload Identity
     
     # Configure the store-gateway
     store_gateway:
