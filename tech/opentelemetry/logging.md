@@ -1,3 +1,4 @@
+```
 下面给你一套**定位“是谁把日志打爆了”**的实操方案，分三层做：
 A. 先止血 → B. 入口侧计量（OTel 自身指标） → C. 后端侧核对 → D. 离线/节点侧取证。
 兼顾你常用的 OTel Collector + Loki/ELK/GCP Logging 场景。所有示例都可直接用/改。
@@ -248,3 +249,4 @@ flowchart TD
 	•	永久方案：收紧 filelog、加多行与过滤、低价值日志做采样，应用侧降噪。
 
 如果你告诉我后端是 Loki / GCP Logging / ES 的哪一种，我可以把上面的查询语句和仪表板变量替换成完全贴你的环境的成品（Grafana 面板 JSON / BQ SQL / Kibana Lens）。
+```
