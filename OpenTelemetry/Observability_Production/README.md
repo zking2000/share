@@ -57,40 +57,40 @@ This solution is designed specifically for production environments with the foll
 
 ```mermaid
 graph TB
-    subgraph "外部访问 | External Access"
-        A[应用程序 | Applications]
+    subgraph External["外部访问 External Access"]
+        A[应用程序 Applications]
         B[Grafana Dashboard]
-        C[外部查询 | External Queries]
+        C[外部查询 External Queries]
     end
 
-    subgraph "Ingress Layer"
+    subgraph Ingress["Ingress Layer"]
         D[NGINX Ingress Controller]
         E[SSL/TLS Termination]
         F[Basic Auth]
     end
 
-    subgraph "GKE Cluster"
-        subgraph "observability namespace"
-            G[Mimir Deployment<br/>指标存储 | Metrics Storage]
-            H[Loki Deployment<br/>日志存储 | Log Storage] 
-            I[Tempo Deployment<br/>链路追踪 | Tracing]
+    subgraph GKE["GKE Cluster"]
+        subgraph ObsNS["observability namespace"]
+            G[Mimir Deployment<br/>指标存储 Metrics Storage]
+            H[Loki Deployment<br/>日志存储 Log Storage] 
+            I[Tempo Deployment<br/>链路追踪 Tracing]
             J[Query Frontends<br/>查询前端]
         end
         
-        subgraph "monitoring namespace"
+        subgraph MonNS["monitoring namespace"]
             K[Prometheus<br/>监控]
             L[Grafana<br/>可视化]
         end
     end
 
-    subgraph "GCP Services"
+    subgraph GCP["GCP Services"]
         M[GCS Buckets<br/>对象存储]
         N[Cloud Redis<br/>缓存层]
         O[IAM & Service Accounts<br/>身份认证]
     end
 
     A -->|OTLP/HTTP/gRPC| D
-    B -->|查询 | Queries| D
+    B -->|查询 Queries| D
     C -->|REST API| D
     
     D --> E
@@ -100,41 +100,41 @@ graph TB
     F --> I
     F --> J
 
-    G -.->|存储 | Storage| M
-    H -.->|存储 | Storage| M
-    I -.->|存储 | Storage| M
+    G -.->|存储 Storage| M
+    H -.->|存储 Storage| M
+    I -.->|存储 Storage| M
     
-    G -.->|缓存 | Cache| N
-    H -.->|缓存 | Cache| N
-    I -.->|缓存 | Cache| N
+    G -.->|缓存 Cache| N
+    H -.->|缓存 Cache| N
+    I -.->|缓存 Cache| N
     
-    G -.->|认证 | Auth| O
-    H -.->|认证 | Auth| O
-    I -.->|认证 | Auth| O
+    G -.->|认证 Auth| O
+    H -.->|认证 Auth| O
+    I -.->|认证 Auth| O
 
-    K -->|监控 | Monitor| G
-    K -->|监控 | Monitor| H
-    K -->|监控 | Monitor| I
+    K -->|监控 Monitor| G
+    K -->|监控 Monitor| H
+    K -->|监控 Monitor| I
     
-    L -->|查询 | Query| G
-    L -->|查询 | Query| H
-    L -->|查询 | Query| I
+    L -->|查询 Query| G
+    L -->|查询 Query| H
+    L -->|查询 Query| I
 ```
 
 ### 数据流架构 | Data Flow Architecture
 
 ```mermaid
 sequenceDiagram
-    participant App as 应用程序<br/>Application
+    participant App as 应用程序 Application
     participant Ingress as NGINX Ingress
-    participant Mimir as Mimir<br/>(Metrics)
-    participant Loki as Loki<br/>(Logs)
-    participant Tempo as Tempo<br/>(Traces)
+    participant Mimir as Mimir Metrics
+    participant Loki as Loki Logs
+    participant Tempo as Tempo Traces
     participant Redis as Redis Cache
     participant GCS as GCS Storage
 
-    Note over App, GCS: 数据写入流程 | Data Ingestion Flow
-    App->>Ingress: OTLP Data (HTTP/gRPC)
+    Note over App, GCS: 数据写入流程 Data Ingestion Flow
+    App->>Ingress: OTLP Data HTTP/gRPC
     Ingress->>Mimir: Metrics
     Ingress->>Loki: Logs  
     Ingress->>Tempo: Traces
@@ -143,12 +143,12 @@ sequenceDiagram
     Loki->>GCS: Store Chunks
     Tempo->>GCS: Store Traces
 
-    Note over App, GCS: 查询流程 | Query Flow
+    Note over App, GCS: 查询流程 Query Flow
     App->>Ingress: Query Request
     Ingress->>Mimir: Query Metrics
     Mimir->>Redis: Check Cache
     Redis-->>Mimir: Cache Hit/Miss
-    Mimir->>GCS: Fetch Data (if cache miss)
+    Mimir->>GCS: Fetch Data if cache miss
     GCS-->>Mimir: Return Data
     Mimir->>Redis: Update Cache
     Mimir-->>App: Query Response
