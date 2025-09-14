@@ -1,0 +1,333 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mimir-config
+  namespace: observability
+data:
+  mimir.yaml: |
+    # Mimir 无状态生产配置 - 优化版
+    target: all
+    
+    server:
+      http_listen_port: 8080
+      grpc_listen_port: 9095
+      log_level: info
+      log_format: json
+      
+    common:
+      storage:
+        backend: gcs
+        gcs:
+          bucket_name: "mimir-blocks-BUCKET_SUFFIX"
+          
+    blocks_storage:
+      backend: gcs
+      gcs:
+        bucket_name: "mimir-blocks-BUCKET_SUFFIX"
+      bucket_store:
+        sync_dir: /tmp/tsdb-sync  # 使用临时目录
+        
+    ruler_storage:
+      backend: gcs
+      gcs:
+        bucket_name: "mimir-ruler-BUCKET_SUFFIX"
+        
+    alertmanager_storage:
+      backend: gcs
+      gcs:
+        bucket_name: "mimir-alertmanager-BUCKET_SUFFIX"
+        
+    ingester:
+      ring:
+        replication_factor: 3
+        tokens_file_path: /tmp/tokens  # 使用临时目录
+        zone_awareness_enabled: true
+      # 无状态配置：减少本地存储依赖
+      max_chunk_age: 2h
+      max_chunk_idle: 30m
+      chunk_target_size: 1572864
+      
+    distributor:
+      pool:
+        health_check_ingesters: true
+      # 生产环境优化
+      ha_tracker:
+        enable_ha_tracker: true
+        kvstore:
+          store: memberlist
+        
+    querier:
+      max_concurrent: 20
+      timeout: 2m
+      # 查询优化
+      query_ingesters_within: 3h
+      
+    query_frontend:
+      max_outstanding_per_tenant: 256
+      compress_responses: true
+      # Redis 缓存配置 - 查询结果缓存
+      results_cache:
+        cache:
+          redis:
+            endpoint: "REDIS_PRIMARY_ENDPOINT:6379"
+            password: "REDIS_PASSWORD"
+            db: 0
+            pool_size: 100
+            timeout: 500ms
+            idle_timeout: 90s
+            max_connection_age: 10m
+            # 缓存 TTL
+            expiration: 30m
+      # 标签名称和值缓存
+      cache_results: true
+      split_queries_by_interval: 24h
+            
+    compactor:
+      data_dir: /tmp/compactor  # 使用临时目录
+      sharding_ring:
+        tokens_file_path: /tmp/tokens
+      # 压缩优化
+      compaction_interval: 30m
+      deletion_delay: 2h
+      
+    store_gateway:
+      sharding_ring:
+        tokens_file_path: /tmp/tokens
+        replication_factor: 3
+      # Redis 缓存优化
+      bucket_store:
+        # Chunks 缓存 - 使用主 Redis
+        chunks_cache:
+          redis:
+            endpoint: "REDIS_PRIMARY_ENDPOINT:6379"
+            password: "REDIS_PASSWORD"
+            db: 1
+            pool_size: 100
+            timeout: 500ms
+            idle_timeout: 90s
+            max_connection_age: 10m
+            expiration: 6h
+        # 元数据缓存 - 使用辅助 Redis
+        metadata_cache:
+          redis:
+            endpoint: "REDIS_SECONDARY_ENDPOINT:6379"
+            password: "REDIS_PASSWORD"
+            db: 0
+            pool_size: 50
+            timeout: 500ms
+            idle_timeout: 90s
+            max_connection_age: 10m
+            expiration: 24h
+        # 索引缓存
+        index_cache:
+          redis:
+            endpoint: "REDIS_SECONDARY_ENDPOINT:6379"
+            password: "REDIS_PASSWORD"
+            db: 1
+            pool_size: 50
+            timeout: 500ms
+            idle_timeout: 90s
+            max_connection_age: 10m
+            expiration: 24h
+        
+    ruler:
+      rule_path: /tmp/rules  # 使用临时目录
+      
+    alertmanager:
+      data_dir: /tmp/alertmanager  # 使用临时目录
+      external_url: https://alertmanager.DOMAIN.com
+      
+    # 生产环境限制
+    limits:
+      max_global_series_per_user: 2000000
+      max_global_series_per_metric: 100000
+      ingestion_rate: 100000
+      ingestion_burst_size: 200000
+      max_query_lookback: 7d
+      max_partial_query_length: 7d
+      
+    memberlist:
+      join_members:
+        - mimir-memberlist:7946
+      # 生产环境优化
+      dead_node_reclaim_time: 10m
+      gossip_interval: 200ms
+      gossip_nodes: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mimir-memberlist
+  namespace: observability
+  labels:
+    app: mimir
+    component: memberlist
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: memberlist
+    port: 7946
+    targetPort: 7946
+    protocol: TCP
+  selector:
+    app: mimir
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mimir
+  namespace: observability
+  labels:
+    app: mimir
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  - name: grpc
+    port: 9095
+    targetPort: 9095
+    protocol: TCP
+  selector:
+    app: mimir
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mimir
+  namespace: observability
+  labels:
+    app: mimir
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: mimir
+  template:
+    metadata:
+      labels:
+        app: mimir
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+        # 强制重启 Pod 以获取新配置
+        config/hash: "{{ .Values.configHash | default "default" }}"
+    spec:
+      serviceAccountName: mimir
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        runAsNonRoot: true
+      # 反亲和性确保 Pod 分布在不同节点
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - mimir
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: mimir
+        image: grafana/mimir:2.10.0
+        imagePullPolicy: IfNotPresent
+        args:
+        - -config.file=/etc/mimir/mimir.yaml
+        - -target=all
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        - name: grpc
+          containerPort: 9095
+          protocol: TCP
+        - name: memberlist
+          containerPort: 7946
+          protocol: TCP
+        env:
+        - name: JAEGER_AGENT_HOST
+          value: tempo.observability.svc.cluster.local
+        - name: JAEGER_AGENT_PORT
+          value: "14268"
+        # Redis 连接信息
+        - name: REDIS_PRIMARY_ENDPOINT
+          value: "REDIS_PRIMARY_ENDPOINT"
+        - name: REDIS_SECONDARY_ENDPOINT
+          value: "REDIS_SECONDARY_ENDPOINT"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-credentials
+              key: primary-password
+        # 优化的资源配置
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+            ephemeral-storage: "10Gi"  # 临时存储
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+            ephemeral-storage: "20Gi"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/mimir
+        - name: tmp
+          mountPath: /tmp
+        # 改进的健康检查
+        livenessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        # 优雅关闭
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 15"]
+      # 使用 emptyDir 而非 PVC
+      volumes:
+      - name: config
+        configMap:
+          name: mimir-config
+      - name: tmp
+        emptyDir:
+          sizeLimit: 20Gi  # 限制临时存储大小
+      # DNS 配置优化
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+        - name: ndots
+          value: "2"
+        - name: edns0
+      # 优雅关闭时间
+      terminationGracePeriodSeconds: 60

@@ -1,0 +1,600 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: observability
+data:
+  loki.yaml: |
+    # Loki 无状态生产配置 - 优化版
+    auth_enabled: false
+    
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9095
+      log_level: info
+      log_format: json
+      # 生产环境优化
+      graceful_shutdown_timeout: 30s
+      
+    common:
+      path_prefix: /tmp/loki  # 使用临时目录
+      storage:
+        gcs:
+          bucket_name: loki-chunks-BUCKET_SUFFIX
+          # GCS 优化
+          request_timeout: 10s
+          enable_http2: true
+      replication_factor: 3
+      ring:
+        instance_addr: 127.0.0.1
+        kvstore:
+          store: memberlist
+          
+    memberlist:
+      join_members:
+        - loki-memberlist:7946
+      # 生产环境优化
+      dead_node_reclaim_time: 10m
+      gossip_interval: 200ms
+      gossip_nodes: 3
+        
+    ingester:
+      lifecycler:
+        address: 127.0.0.1
+        ring:
+          kvstore:
+            store: memberlist
+          replication_factor: 3
+        final_sleep: 0s
+      # 无状态优化：减少本地存储时间
+      chunk_idle_period: 30m
+      max_chunk_age: 1h
+      chunk_target_size: 1572864  # 1.5MB
+      chunk_retain_period: 15s
+      max_transfer_retries: 0
+      # 并发优化
+      concurrent_flushes: 16
+      flush_check_period: 30s
+      wal:
+        enabled: true
+        dir: /tmp/loki/wal  # 使用临时目录
+        # WAL 优化
+        checkpoint_duration: 5m
+        flush_on_shutdown: true
+        
+    schema_config:
+      configs:
+        - from: 2020-10-24
+          store: boltdb-shipper
+          object_store: gcs
+          schema: v11
+          index:
+            prefix: index_
+            period: 24h
+        # 新的 TSDB 索引（推荐用于新部署）
+        - from: 2024-01-01
+          store: tsdb
+          object_store: gcs
+          schema: v12
+          index:
+            prefix: tsdb_index_
+            period: 24h
+            
+    storage_config:
+      boltdb_shipper:
+        active_index_directory: /tmp/loki/boltdb-shipper-active
+        cache_location: /tmp/loki/boltdb-shipper-cache
+        cache_ttl: 24h
+        shared_store: gcs
+        # 索引优化
+        index_gateway_client:
+          server_address: loki-index-gateway:9095
+      tsdb_shipper:
+        active_index_directory: /tmp/loki/tsdb-shipper-active
+        cache_location: /tmp/loki/tsdb-shipper-cache
+        cache_ttl: 24h
+        shared_store: gcs
+        # TSDB 优化
+        index_gateway_client:
+          server_address: loki-index-gateway:9095
+      gcs:
+        bucket_name: loki-chunks-BUCKET_SUFFIX
+        # 生产环境优化
+        request_timeout: 10s
+        
+    compactor:
+      working_directory: /tmp/loki/boltdb-shipper-compactor
+      shared_store: gcs
+      # 压缩优化
+      compaction_interval: 10m
+      retention_enabled: true
+      retention_delete_delay: 2h
+      retention_delete_worker_count: 150
+      
+    limits_config:
+      # 生产环境限制
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+      ingestion_rate_mb: 32
+      ingestion_burst_size_mb: 64
+      max_concurrent_tail_requests: 20
+      max_query_parallelism: 32
+      max_streams_per_user: 50000
+      max_line_size: 256000
+      # 查询限制
+      max_query_series: 10000
+      max_query_range: 7d
+      max_query_length: 12000h
+      # 标签限制
+      max_label_name_length: 1024
+      max_label_value_length: 4096
+      max_label_names_per_series: 30
+      
+    chunk_store_config:
+      max_look_back_period: 0s
+      # Redis 缓存配置
+      chunk_cache_config:
+        redis:
+          endpoint: "REDIS_PRIMARY_ENDPOINT:6379"
+          password: "REDIS_PASSWORD"
+          db: 3
+          pool_size: 100
+          timeout: 500ms
+          idle_timeout: 90s
+          max_connection_age: 10m
+          expiration: 6h
+          
+    table_manager:
+      retention_deletes_enabled: true
+      retention_period: 168h  # 7 days
+      
+    ruler:
+      storage:
+        type: gcs
+        gcs:
+          bucket_name: loki-ruler-BUCKET_SUFFIX
+      rule_path: /tmp/loki/rules
+      alertmanager_url: http://mimir.observability.svc.cluster.local:8080/alertmanager
+      ring:
+        kvstore:
+          store: memberlist
+      enable_api: true
+      # 规则评估优化
+      evaluation_interval: 1m
+      poll_interval: 1m
+      
+    frontend:
+      max_outstanding_per_tenant: 512
+      compress_responses: true
+      # 查询分片
+      split_queries_by_interval: 30m
+      # 并行化
+      parallelise_shardable_queries: true
+      
+    query_range:
+      # Redis 结果缓存
+      results_cache:
+        cache:
+          redis:
+            endpoint: "REDIS_SECONDARY_ENDPOINT:6379"
+            password: "REDIS_PASSWORD"
+            db: 3
+            pool_size: 50
+            timeout: 500ms
+            idle_timeout: 90s
+            max_connection_age: 10m
+            expiration: 1h
+      # 索引统计缓存
+      index_stats_cache:
+        cache:
+          redis:
+            endpoint: "REDIS_SECONDARY_ENDPOINT:6379"
+            password: "REDIS_PASSWORD"
+            db: 4
+            pool_size: 50
+            timeout: 500ms
+            idle_timeout: 90s
+            max_connection_age: 10m
+            expiration: 24h
+      cache_results: true
+      max_retries: 5
+      split_queries_by_interval: 15m
+      # 查询优化
+      align_queries_with_step: true
+      cache_index_stats_results: true
+      
+    frontend_worker:
+      frontend_address: loki-query-frontend:9095
+      parallelism: 10
+      match_max_concurrent: true
+      
+    index_gateway:
+      mode: ring
+      ring:
+        kvstore:
+          store: memberlist
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-memberlist
+  namespace: observability
+  labels:
+    app: loki
+    component: memberlist
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: memberlist
+    port: 7946
+    targetPort: 7946
+    protocol: TCP
+  selector:
+    app: loki
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: observability
+  labels:
+    app: loki
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "3100"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 3100
+    targetPort: 3100
+    protocol: TCP
+  - name: grpc
+    port: 9095
+    targetPort: 9095
+    protocol: TCP
+  selector:
+    app: loki
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-query-frontend
+  namespace: observability
+  labels:
+    app: loki
+    component: query-frontend
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 3100
+    targetPort: 3100
+    protocol: TCP
+  - name: grpc
+    port: 9095
+    targetPort: 9095
+    protocol: TCP
+  selector:
+    app: loki
+    component: query-frontend
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-index-gateway
+  namespace: observability
+  labels:
+    app: loki
+    component: index-gateway
+spec:
+  type: ClusterIP
+  ports:
+  - name: grpc
+    port: 9095
+    targetPort: 9095
+    protocol: TCP
+  selector:
+    app: loki
+    component: index-gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: observability
+  labels:
+    app: loki
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3100"
+        prometheus.io/path: "/metrics"
+        config/hash: "{{ .Values.configHash | default "default" }}"
+    spec:
+      serviceAccountName: loki
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        runAsNonRoot: true
+      # 反亲和性
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - loki
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: loki
+        image: grafana/loki:2.9.0
+        imagePullPolicy: IfNotPresent
+        args:
+        - -config.file=/etc/loki/loki.yaml
+        - -target=all
+        ports:
+        - name: http
+          containerPort: 3100
+          protocol: TCP
+        - name: grpc
+          containerPort: 9095
+          protocol: TCP
+        - name: memberlist
+          containerPort: 7946
+          protocol: TCP
+        env:
+        # Redis 连接信息
+        - name: REDIS_PRIMARY_ENDPOINT
+          value: "REDIS_PRIMARY_ENDPOINT"
+        - name: REDIS_SECONDARY_ENDPOINT
+          value: "REDIS_SECONDARY_ENDPOINT"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-credentials
+              key: primary-password
+        # 优化的资源配置
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+            ephemeral-storage: "10Gi"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+            ephemeral-storage: "20Gi"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/loki
+        - name: tmp
+          mountPath: /tmp
+        # 改进的健康检查
+        livenessProbe:
+          httpGet:
+            path: /ready
+            port: 3100
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3100
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 15"]
+      volumes:
+      - name: config
+        configMap:
+          name: loki-config
+      - name: tmp
+        emptyDir:
+          sizeLimit: 20Gi
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+        - name: ndots
+          value: "2"
+        - name: edns0
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki-query-frontend
+  namespace: observability
+  labels:
+    app: loki
+    component: query-frontend
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: loki
+      component: query-frontend
+  template:
+    metadata:
+      labels:
+        app: loki
+        component: query-frontend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3100"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: loki
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        runAsNonRoot: true
+      containers:
+      - name: loki-query-frontend
+        image: grafana/loki:2.9.0
+        imagePullPolicy: IfNotPresent
+        args:
+        - -config.file=/etc/loki/loki.yaml
+        - -target=query-frontend
+        ports:
+        - name: http
+          containerPort: 3100
+          protocol: TCP
+        - name: grpc
+          containerPort: 9095
+          protocol: TCP
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+            ephemeral-storage: "1Gi"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+            ephemeral-storage: "2Gi"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/loki
+        - name: tmp
+          mountPath: /tmp
+        livenessProbe:
+          httpGet:
+            path: /ready
+            port: 3100
+          initialDelaySeconds: 45
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3100
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: config
+        configMap:
+          name: loki-config
+      - name: tmp
+        emptyDir:
+          sizeLimit: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki-index-gateway
+  namespace: observability
+  labels:
+    app: loki
+    component: index-gateway
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: loki
+      component: index-gateway
+  template:
+    metadata:
+      labels:
+        app: loki
+        component: index-gateway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3100"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: loki
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        runAsNonRoot: true
+      containers:
+      - name: loki-index-gateway
+        image: grafana/loki:2.9.0
+        imagePullPolicy: IfNotPresent
+        args:
+        - -config.file=/etc/loki/loki.yaml
+        - -target=index-gateway
+        ports:
+        - name: http
+          containerPort: 3100
+          protocol: TCP
+        - name: grpc
+          containerPort: 9095
+          protocol: TCP
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+            ephemeral-storage: "5Gi"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+            ephemeral-storage: "10Gi"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/loki
+        - name: tmp
+          mountPath: /tmp
+        livenessProbe:
+          httpGet:
+            path: /ready
+            port: 3100
+          initialDelaySeconds: 45
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3100
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: config
+        configMap:
+          name: loki-config
+      - name: tmp
+        emptyDir:
+          sizeLimit: 10Gi

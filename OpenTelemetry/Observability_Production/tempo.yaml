@@ -1,0 +1,450 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-config
+  namespace: observability
+data:
+  tempo.yaml: |
+    # Tempo 无状态生产配置 - 仅支持 OpenTelemetry
+    server:
+      http_listen_port: 3200
+      grpc_listen_port: 9095
+      log_level: info
+      log_format: json
+      
+    distributor:
+      receivers:
+        # 仅保留 OpenTelemetry 协议
+        otlp:
+          protocols:
+            http:
+              endpoint: 0.0.0.0:4318
+            grpc:
+              endpoint: 0.0.0.0:4317
+      # 生产环境优化
+      log_received_spans:
+        enabled: false  # 减少日志噪音
+        
+    ingester:
+      # 无状态优化：减少本地存储时间
+      max_block_duration: 2m
+      max_block_bytes: 1073741824  # 1GB
+      complete_block_timeout: 5m
+      
+    compactor:
+      compaction:
+        # 保留策略
+        block_retention: 168h # 7 days
+        compacted_block_retention: 1h
+        retention_concurrency: 10
+        v2_in_buffer_bytes: 5242880  # 5MB
+        v2_out_buffer_bytes: 20971520  # 20MB
+        
+    storage:
+      trace:
+        backend: gcs
+        gcs:
+          bucket_name: tempo-traces-BUCKET_SUFFIX
+          # 生产环境优化
+          hedge_requests_at: 2s
+          hedge_requests_up_to: 2
+          request_timeout: 10s
+        pool:
+          max_workers: 100
+          queue_depth: 10000
+        wal:
+          path: /tmp/wal  # 使用临时目录
+          # WAL 优化
+          v2_encoding: snappy
+        local:
+          path: /tmp/blocks  # 使用临时目录
+        block:
+          # 布隆过滤器优化
+          bloom_filter_false_positive: .05
+          bloom_filter_shard_size_bytes: 104857600  # 100MB
+          index_downsample_bytes: 1000
+          encoding: zstd
+          # 索引优化
+          index_page_size_bytes: 262144  # 256KB
+          
+    querier:
+      max_concurrent_queries: 20
+      # 查询优化
+      search:
+        prefer_self: 10  # 优先查询本地数据
+        external_hedge_requests_at: 8s
+        external_hedge_requests_up_to: 2
+      frontend_worker:
+        frontend_address: tempo-query-frontend:9095
+        parallelism: 10
+        match_max_concurrent: true
+        
+    query_frontend:
+      search:
+        duration_slo: 5s
+        throughput_bytes_slo: 1.073741824e+09
+        max_retries: 5
+        # 并发控制
+        concurrent_jobs: 1000
+        target_bytes_per_job: 104857600  # 100MB
+      trace_by_id:
+        duration_slo: 5s
+      # Redis 缓存配置
+      results_cache:
+        cache:
+          redis:
+            endpoint: "REDIS_PRIMARY_ENDPOINT:6379"
+            password: "REDIS_PASSWORD"
+            db: 2
+            pool_size: 100
+            timeout: 500ms
+            idle_timeout: 90s
+            max_connection_age: 10m
+            expiration: 1h
+      # 搜索结果缓存
+      search_cache:
+        cache:
+          redis:
+            endpoint: "REDIS_SECONDARY_ENDPOINT:6379"
+            password: "REDIS_PASSWORD"
+            db: 2
+            pool_size: 50
+            timeout: 500ms
+            idle_timeout: 90s
+            max_connection_age: 10m
+            expiration: 30m
+            
+    overrides:
+      defaults:
+        # 仅启用必要的指标生成器
+        metrics_generator:
+          processors: [service-graphs, span-metrics]
+          # 生产环境优化
+          max_active_series: 100000
+          collection_interval: 15s
+        # 限制配置
+        max_traces_per_user: 50000
+        max_bytes_per_trace: 5000000  # 5MB
+        ingestion_rate_strategy: global
+        ingestion_rate_limit_bytes: 20000000  # 20MB/s
+        ingestion_burst_size_bytes: 40000000  # 40MB
+        
+    metrics_generator:
+      registry:
+        external_labels:
+          source: tempo
+          cluster: production
+      storage:
+        path: /tmp/generator/wal  # 使用临时目录
+        remote_write:
+        - url: http://mimir.observability.svc.cluster.local:8080/api/v1/push
+          send_exemplars: true
+          # 远程写入优化
+          queue_config:
+            capacity: 10000
+            max_samples_per_send: 2000
+            batch_send_deadline: 5s
+            min_shards: 1
+            max_shards: 10
+          
+    memberlist:
+      join_members:
+        - tempo-memberlist:7946
+      # 生产环境优化
+      dead_node_reclaim_time: 10m
+      gossip_interval: 200ms
+      gossip_nodes: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo-memberlist
+  namespace: observability
+  labels:
+    app: tempo
+    component: memberlist
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: memberlist
+    port: 7946
+    targetPort: 7946
+    protocol: TCP
+  selector:
+    app: tempo
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo
+  namespace: observability
+  labels:
+    app: tempo
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "3200"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 3200
+    targetPort: 3200
+    protocol: TCP
+  - name: grpc
+    port: 9095
+    targetPort: 9095
+    protocol: TCP
+  # 仅保留 OpenTelemetry 端口
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+    protocol: TCP
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+    protocol: TCP
+  selector:
+    app: tempo
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tempo-query-frontend
+  namespace: observability
+  labels:
+    app: tempo
+    component: query-frontend
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 3200
+    targetPort: 3200
+    protocol: TCP
+  - name: grpc
+    port: 9095
+    targetPort: 9095
+    protocol: TCP
+  selector:
+    app: tempo
+    component: query-frontend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tempo
+  namespace: observability
+  labels:
+    app: tempo
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: tempo
+  template:
+    metadata:
+      labels:
+        app: tempo
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3200"
+        prometheus.io/path: "/metrics"
+        config/hash: "{{ .Values.configHash | default "default" }}"
+    spec:
+      serviceAccountName: tempo
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        runAsNonRoot: true
+      # 反亲和性
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - tempo
+              topologyKey: kubernetes.io/hostname
+      containers:
+      - name: tempo
+        image: grafana/tempo:2.3.0
+        imagePullPolicy: IfNotPresent
+        args:
+        - -config.file=/etc/tempo/tempo.yaml
+        - -target=all
+        ports:
+        - name: http
+          containerPort: 3200
+          protocol: TCP
+        - name: grpc
+          containerPort: 9095
+          protocol: TCP
+        - name: memberlist
+          containerPort: 7946
+          protocol: TCP
+        - name: otlp-http
+          containerPort: 4318
+          protocol: TCP
+        - name: otlp-grpc
+          containerPort: 4317
+          protocol: TCP
+        env:
+        # Redis 连接信息
+        - name: REDIS_PRIMARY_ENDPOINT
+          value: "REDIS_PRIMARY_ENDPOINT"
+        - name: REDIS_SECONDARY_ENDPOINT
+          value: "REDIS_SECONDARY_ENDPOINT"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-credentials
+              key: primary-password
+        # 优化的资源配置
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+            ephemeral-storage: "10Gi"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+            ephemeral-storage: "20Gi"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/tempo
+        - name: tmp
+          mountPath: /tmp
+        # 改进的健康检查
+        livenessProbe:
+          httpGet:
+            path: /ready
+            port: 3200
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3200
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 15"]
+      volumes:
+      - name: config
+        configMap:
+          name: tempo-config
+      - name: tmp
+        emptyDir:
+          sizeLimit: 20Gi
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+        - name: ndots
+          value: "2"
+        - name: edns0
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tempo-query-frontend
+  namespace: observability
+  labels:
+    app: tempo
+    component: query-frontend
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: tempo
+      component: query-frontend
+  template:
+    metadata:
+      labels:
+        app: tempo
+        component: query-frontend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3200"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: tempo
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        runAsNonRoot: true
+      containers:
+      - name: tempo-query-frontend
+        image: grafana/tempo:2.3.0
+        imagePullPolicy: IfNotPresent
+        args:
+        - -config.file=/etc/tempo/tempo.yaml
+        - -target=query-frontend
+        ports:
+        - name: http
+          containerPort: 3200
+          protocol: TCP
+        - name: grpc
+          containerPort: 9095
+          protocol: TCP
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+            ephemeral-storage: "1Gi"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+            ephemeral-storage: "2Gi"
+        volumeMounts:
+        - name: config
+          mountPath: /etc/tempo
+        - name: tmp
+          mountPath: /tmp
+        livenessProbe:
+          httpGet:
+            path: /ready
+            port: 3200
+          initialDelaySeconds: 45
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3200
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: config
+        configMap:
+          name: tempo-config
+      - name: tmp
+        emptyDir:
+          sizeLimit: 2Gi

@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: observability
+data:
+  # GCP Redis 连接配置
+  redis-connection.yaml: |
+    # GCP Redis 实例连接信息
+    # 需要替换为实际的 Redis 实例信息
+    redis:
+      # 主 Redis 实例（用于查询缓存）
+      primary:
+        endpoint: "REDIS_PRIMARY_ENDPOINT"  # 例如: 10.0.0.3:6379
+        password: "REDIS_PASSWORD"          # 如果启用了认证
+        db: 0
+        pool_size: 100
+        timeout: 500ms
+        idle_timeout: 90s
+        max_connection_age: 10m
+        
+      # 辅助 Redis 实例（用于索引缓存，可选）
+      secondary:
+        endpoint: "REDIS_SECONDARY_ENDPOINT"  # 例如: 10.0.0.4:6379
+        password: "REDIS_PASSWORD"
+        db: 1
+        pool_size: 50
+        timeout: 500ms
+        idle_timeout: 90s
+        max_connection_age: 10m
+        
+    # Redis 集群配置（如果使用 Redis 集群）
+    redis_cluster:
+      enabled: false
+      endpoints:
+        - "REDIS_CLUSTER_ENDPOINT_1"
+        - "REDIS_CLUSTER_ENDPOINT_2"
+        - "REDIS_CLUSTER_ENDPOINT_3"
+      password: "REDIS_CLUSTER_PASSWORD"
+      
+    # 缓存配置
+    cache_config:
+      # 默认 TTL
+      default_ttl: 1h
+      # 查询结果缓存 TTL
+      results_ttl: 30m
+      # 索引缓存 TTL
+      index_ttl: 24h
+      # 元数据缓存 TTL
+      metadata_ttl: 6h
+      # 最大缓存大小（每个实例）
+      max_size_mb: 1024
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-credentials
+  namespace: observability
+type: Opaque
+data:
+  # Base64 编码的 Redis 密码
+  # echo -n "your-redis-password" | base64
+  primary-password: "UkVESVNfUEFTU1dPUkQ="  # 替换为实际密码
+  secondary-password: "UkVESVNfUEFTU1dPUkQ="  # 替换为实际密码
+  cluster-password: "UkVESVNfQ0xVU1RFUl9QQVNTV09SRA=="  # 替换为实际密码
+---
+# Redis 连接测试 Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redis-connection-test
+  namespace: observability
+  labels:
+    app: redis-test
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: redis-test
+        image: redis:7-alpine
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Testing Redis connection..."
+          redis-cli -h $REDIS_HOST -p $REDIS_PORT -a $REDIS_PASSWORD ping
+          if [ $? -eq 0 ]; then
+            echo "Redis connection successful!"
+          else
+            echo "Redis connection failed!"
+            exit 1
+          fi
+        env:
+        - name: REDIS_HOST
+          value: "REDIS_PRIMARY_ENDPOINT"  # 需要替换
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-credentials
+              key: primary-password
+      ttlSecondsAfterFinished: 300
