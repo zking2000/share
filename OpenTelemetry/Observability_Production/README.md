@@ -57,106 +57,263 @@ This solution is designed specifically for production environments with the foll
 
 ```mermaid
 graph TB
-    subgraph External["外部访问 External Access"]
-        A[应用程序 Applications]
-        B[Grafana Dashboard]
-        C[外部查询 External Queries]
+    subgraph DataSources["数据源层 Data Sources Layer"]
+        A1[CAEP GKE Cluster<br/>OpenTelemetry]
+        A2[CAEP IKP Cluster<br/>OpenTelemetry]
+        A3[CAEP VMs<br/>OpenTelemetry]
+        A4[CAEP KONG DP<br/>OpenTelemetry]
+        A5[Other Platforms<br/>Applications<br/>OpenTelemetry]
     end
 
-    subgraph Ingress["Ingress Layer"]
-        D[NGINX Ingress Controller]
-        E[SSL/TLS Termination]
-        F[Basic Auth]
+    subgraph LoadBalancer["负载均衡层 Load Balancer Layer"]
+        B[HAProxy Cluster<br/>负载均衡与高可用]
     end
 
-    subgraph GKE["GKE Cluster"]
-        subgraph ObsNS["observability namespace"]
-            G[Mimir Deployment<br/>指标存储 Metrics Storage]
-            H[Loki Deployment<br/>日志存储 Log Storage] 
-            I[Tempo Deployment<br/>链路追踪 Tracing]
-            J[Query Frontends<br/>查询前端]
-        end
-        
-        subgraph MonNS["monitoring namespace"]
-            K[Prometheus<br/>监控]
-            L[Grafana<br/>可视化]
-        end
+    subgraph MessageQueue["消息队列层 Message Queue Layer"]
+        C[Messaging Queue Cluster<br/>Kafka<br/>数据缓冲与解耦]
     end
 
-    subgraph GCP["GCP Services"]
-        M[GCS Buckets<br/>对象存储]
-        N[Cloud Redis<br/>缓存层]
-        O[IAM & Service Accounts<br/>身份认证]
+    subgraph CollectorLayer["收集器层 Collector Layer"]
+        D[OpenTelemetry Collector Cluster<br/>数据处理与路由]
     end
 
-    A -->|OTLP/HTTP/gRPC| D
-    B -->|查询 Queries| D
-    C -->|REST API| D
-    
-    D --> E
-    E --> F
-    F --> G
-    F --> H  
-    F --> I
-    F --> J
+    subgraph StorageLayer["存储层 Storage Layer"]
+        E1[Mimir<br/>指标存储]
+        E2[Loki<br/>日志存储]
+        E3[Tempo<br/>链路追踪存储]
+    end
 
-    G -.->|存储 Storage| M
-    H -.->|存储 Storage| M
-    I -.->|存储 Storage| M
-    
-    G -.->|缓存 Cache| N
-    H -.->|缓存 Cache| N
-    I -.->|缓存 Cache| N
-    
-    G -.->|认证 Auth| O
-    H -.->|认证 Auth| O
-    I -.->|认证 Auth| O
+    subgraph PersistentStorage["持久化存储 Persistent Storage"]
+        F[Storage<br/>GCS Buckets<br/>长期数据存储]
+    end
 
-    K -->|监控 Monitor| G
-    K -->|监控 Monitor| H
-    K -->|监控 Monitor| I
+    subgraph Visualization["可视化层 Visualization Layer"]
+        G[Grafana UI<br/>统一可视化界面]
+    end
+
+    subgraph CloudInfra["云基础设施 Cloud Infrastructure"]
+        H1[GCE<br/>虚拟机实例]
+        H2[GKE<br/>Kubernetes集群]
+        H3[Cloud Redis<br/>缓存服务]
+        H4[IAM<br/>身份认证]
+    end
+
+    %% 数据流向
+    A1 -->|OTLP Data| B
+    A2 -->|OTLP Data| B
+    A3 -->|OTLP Data| B
+    A4 -->|OTLP Data| B
+    A5 -->|OTLP Data| B
+
+    B -->|Load Balanced| C
+    C -->|Buffered Data| D
     
-    L -->|查询 Query| G
-    L -->|查询 Query| H
-    L -->|查询 Query| I
+    D -->|Metrics| E1
+    D -->|Logs| E2
+    D -->|Traces| E3
+
+    E1 -->|Long-term Storage| F
+    E2 -->|Long-term Storage| F
+    E3 -->|Long-term Storage| F
+
+    G -->|Query Metrics| E1
+    G -->|Query Logs| E2
+    G -->|Query Traces| E3
+    G -->|Historical Data| F
+
+    %% 云基础设施支持
+    H2 -.->|运行环境| D
+    H2 -.->|运行环境| E1
+    H2 -.->|运行环境| E2
+    H2 -.->|运行环境| E3
+    H1 -.->|运行环境| B
+    H1 -.->|运行环境| C
+    H3 -.->|缓存支持| E1
+    H3 -.->|缓存支持| E2
+    H3 -.->|缓存支持| E3
+    H4 -.->|身份认证| G
 ```
 
-### 数据流架构 | Data Flow Architecture
+### 数据写入流程 | Data Ingestion Flow
 
 ```mermaid
 sequenceDiagram
-    participant App as 应用程序 Application
-    participant Ingress as NGINX Ingress
-    participant Mimir as Mimir Metrics
-    participant Loki as Loki Logs
-    participant Tempo as Tempo Traces
-    participant Redis as Redis Cache
-    participant GCS as GCS Storage
+    participant CAEP as CAEP Clusters/VMs
+    participant HAProxy as HAProxy Cluster
+    participant Kafka as Kafka Message Queue
+    participant OTelCol as OpenTelemetry Collector
+    participant Mimir as Mimir
+    participant Loki as Loki
+    participant Tempo as Tempo
+    participant Storage as GCS Storage
 
-    Note over App, GCS: 数据写入流程 Data Ingestion Flow
-    App->>Ingress: OTLP Data HTTP/gRPC
-    Ingress->>Mimir: Metrics
-    Ingress->>Loki: Logs  
-    Ingress->>Tempo: Traces
+    Note over CAEP, Storage: 数据写入流程 Data Ingestion Process
+
+    %% 数据收集阶段
+    CAEP->>HAProxy: Send OTLP Data (Metrics/Logs/Traces)
+    Note right of CAEP: 多个数据源同时发送<br/>OpenTelemetry数据
     
-    Mimir->>GCS: Store Blocks
-    Loki->>GCS: Store Chunks
-    Tempo->>GCS: Store Traces
+    %% 负载均衡阶段
+    HAProxy->>HAProxy: Load Balance & Health Check
+    HAProxy->>Kafka: Forward Balanced Data
+    Note right of HAProxy: 负载均衡确保高可用<br/>分发到多个Kafka节点
 
-    Note over App, GCS: 查询流程 Query Flow
-    App->>Ingress: Query Request
-    Ingress->>Mimir: Query Metrics
-    Mimir->>Redis: Check Cache
-    Redis-->>Mimir: Cache Hit/Miss
-    Mimir->>GCS: Fetch Data if cache miss
-    GCS-->>Mimir: Return Data
-    Mimir->>Redis: Update Cache
-    Mimir-->>App: Query Response
+    %% 消息队列缓冲
+    Kafka->>Kafka: Buffer & Partition Data
+    Note right of Kafka: 按数据类型分区<br/>提供数据缓冲和解耦
+
+    %% 数据处理阶段
+    OTelCol->>Kafka: Pull Data from Topics
+    OTelCol->>OTelCol: Process & Transform Data
+    Note right of OTelCol: 数据清洗、转换<br/>添加标签和元数据
+
+    %% 数据分发存储
+    OTelCol->>Mimir: Send Processed Metrics
+    OTelCol->>Loki: Send Processed Logs
+    OTelCol->>Tempo: Send Processed Traces
+
+    %% 持久化存储
+    Mimir->>Storage: Store Metrics Blocks
+    Loki->>Storage: Store Log Chunks
+    Tempo->>Storage: Store Trace Data
+
+    Note over Mimir, Storage: 数据持久化到GCS<br/>支持长期存储和查询
+```
+
+### 数据查询流程 | Data Query Flow
+
+```mermaid
+sequenceDiagram
+    participant User as 用户 User
+    participant Grafana as Grafana UI
+    participant Mimir as Mimir
+    participant Loki as Loki
+    participant Tempo as Tempo
+    participant Redis as Redis Cache
+    participant Storage as GCS Storage
+
+    Note over User, Storage: 数据查询流程 Data Query Process
+
+    %% 查询请求
+    User->>Grafana: Request Dashboard/Query
+    Note right of User: 用户通过Grafana<br/>发起查询请求
+
+    %% 查询分发
+    Grafana->>Mimir: Query Metrics (PromQL)
+    Grafana->>Loki: Query Logs (LogQL)
+    Grafana->>Tempo: Query Traces (TraceQL)
+
+    %% Mimir查询流程
+    Note over Mimir, Storage: Mimir指标查询流程
+    Mimir->>Redis: Check Metrics Cache
+    alt Cache Hit
+        Redis-->>Mimir: Return Cached Data
+    else Cache Miss
+        Mimir->>Storage: Query Historical Data
+        Storage-->>Mimir: Return Raw Data
+        Mimir->>Redis: Cache Query Results
+    end
+    Mimir-->>Grafana: Return Metrics Data
+
+    %% Loki查询流程
+    Note over Loki, Storage: Loki日志查询流程
+    Loki->>Redis: Check Logs Cache
+    alt Cache Hit
+        Redis-->>Loki: Return Cached Results
+    else Cache Miss
+        Loki->>Storage: Query Log Chunks
+        Storage-->>Loki: Return Log Data
+        Loki->>Redis: Cache Search Results
+    end
+    Loki-->>Grafana: Return Logs Data
+
+    %% Tempo查询流程
+    Note over Tempo, Storage: Tempo链路查询流程
+    Tempo->>Redis: Check Trace Cache
+    alt Cache Hit
+        Redis-->>Tempo: Return Cached Traces
+    else Cache Miss
+        Tempo->>Storage: Query Trace Blocks
+        Storage-->>Tempo: Return Trace Data
+        Tempo->>Redis: Cache Trace Results
+    end
+    Tempo-->>Grafana: Return Trace Data
+
+    %% 结果聚合展示
+    Grafana->>Grafana: Aggregate & Visualize Data
+    Grafana-->>User: Display Dashboard/Results
+    Note right of Grafana: 聚合多种数据源<br/>提供统一可视化界面
 ```
 
 ---
 
 ## 🔧 组件说明 | Components Description
+
+### HAProxy Cluster - 负载均衡层 | Load Balancer Layer
+
+**中文说明**:
+- **用途**: 为 OpenTelemetry 数据提供高可用负载均衡
+- **特性**: 
+  - 支持多种负载均衡算法（轮询、最少连接、权重等）
+  - 提供健康检查，自动剔除故障节点
+  - SSL终止和HTTP/2支持
+  - 支持会话保持和连接复用
+- **部署**: 运行在 GCE 虚拟机上，支持多实例高可用
+- **配置**: 支持动态配置更新，无需重启服务
+
+**English Description**:
+- **Purpose**: Provides high-availability load balancing for OpenTelemetry data
+- **Features**:
+  - Supports multiple load balancing algorithms (round-robin, least connections, weighted)
+  - Provides health checks with automatic failover
+  - SSL termination and HTTP/2 support
+  - Supports session persistence and connection multiplexing
+- **Deployment**: Runs on GCE VMs with multi-instance high availability
+- **Configuration**: Supports dynamic configuration updates without service restart
+
+### Kafka Message Queue - 消息队列层 | Message Queue Layer
+
+**中文说明**:
+- **用途**: 为可观测性数据提供可靠的消息缓冲和解耦
+- **特性**:
+  - 高吞吐量数据处理，支持数百万消息/秒
+  - 数据持久化，防止数据丢失
+  - 分区机制，支持水平扩展
+  - 消费者组管理，支持多消费者并行处理
+- **数据分区**: 按数据类型（metrics、logs、traces）分区
+- **保留策略**: 配置合适的数据保留时间，平衡性能和存储成本
+
+**English Description**:
+- **Purpose**: Provides reliable message buffering and decoupling for observability data
+- **Features**:
+  - High throughput data processing, supporting millions of messages/second
+  - Data persistence to prevent data loss
+  - Partitioning mechanism for horizontal scaling
+  - Consumer group management for parallel processing
+- **Data Partitioning**: Partitioned by data type (metrics, logs, traces)
+- **Retention Policy**: Configured retention time balancing performance and storage costs
+
+### OpenTelemetry Collector Cluster - 收集器层 | Collector Layer
+
+**中文说明**:
+- **用途**: 统一的可观测性数据收集、处理和路由中心
+- **特性**:
+  - 支持多种数据格式和协议转换
+  - 数据采样、过滤和丰富化处理
+  - 批处理优化，提高传输效率
+  - 支持多目标导出，灵活的数据路由
+- **处理器**: 包含属性处理器、资源检测器、批处理器等
+- **导出器**: 支持 Prometheus、Jaeger、OTLP 等多种格式
+
+**English Description**:
+- **Purpose**: Unified observability data collection, processing, and routing center
+- **Features**:
+  - Supports multiple data format and protocol conversions
+  - Data sampling, filtering, and enrichment processing
+  - Batch processing optimization for improved transmission efficiency
+  - Multi-target export support with flexible data routing
+- **Processors**: Includes attribute processors, resource detectors, batch processors
+- **Exporters**: Supports Prometheus, Jaeger, OTLP and other formats
 
 ### Mimir - 指标存储 | Metrics Storage
 
